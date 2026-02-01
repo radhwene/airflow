@@ -40,6 +40,7 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.sdk import Asset, TaskGroup, TriggerRule, task, task_group
 from airflow.utils.state import DagRunState, State, TaskInstanceState, TerminalTIState
 
+from tests_common.test_utils.config import conf_vars
 from tests_common.test_utils.db import (
     clear_db_assets,
     clear_db_dags,
@@ -201,7 +202,6 @@ class TestTIRunState:
                 "partition_key": None,
             },
             "task_reschedule_count": 0,
-            "upstream_map_indexes": {},
             "max_tries": max_tries,
             "should_retry": should_retry,
             "variables": [],
@@ -248,10 +248,7 @@ class TestTIRunState:
         assert response.status_code == 409
 
     def test_dynamic_task_mapping_with_parse_time_value(self, client, dag_maker):
-        """
-        Test that the Task Instance upstream_map_indexes is correctly fetched when to running the Task Instances
-        """
-
+        """Test that dynamic task mapping works correctly with parse-time values."""
         with dag_maker("test_dynamic_task_mapping_with_parse_time_value", serialized=True):
 
             @task_group
@@ -277,23 +274,6 @@ class TestTIRunState:
             ti.set_state(State.QUEUED)
         dag_maker.session.flush()
 
-        # key: (task_id, map_index)
-        # value: result upstream_map_indexes ({task_id: map_indexes})
-        expected_upstream_map_indexes = {
-            # no upstream task for task_group_1.group_task_1
-            ("task_group_1.group1_task_1", 0): {},
-            ("task_group_1.group1_task_1", 1): {},
-            # the upstream task for task_group_1.group_task_2 is task_group_1.group_task_2
-            # since they are in the same task group, the upstream map index should be the same as the task
-            ("task_group_1.group1_task_2", 0): {"task_group_1.group1_task_1": 0},
-            ("task_group_1.group1_task_2", 1): {"task_group_1.group1_task_1": 1},
-            # the upstream task for task2 is the last tasks of task_group_1, which is
-            # task_group_1.group_task_2
-            # since they are not in the same task group, the upstream map index should include all the
-            # expanded tasks
-            ("task2", -1): {"task_group_1.group1_task_2": [0, 1]},
-        }
-
         for ti in dr.get_task_instances():
             response = client.patch(
                 f"/execution/task-instances/{ti.id}/run",
@@ -307,13 +287,9 @@ class TestTIRunState:
             )
 
             assert response.status_code == 200
-            upstream_map_indexes = response.json()["upstream_map_indexes"]
-            assert upstream_map_indexes == expected_upstream_map_indexes[(ti.task_id, ti.map_index)]
 
-    def test_nested_mapped_task_group_upstream_indexes(self, client, dag_maker):
-        """
-        Test that upstream_map_indexes are correctly computed for tasks in nested mapped task groups.
-        """
+    def test_nested_mapped_task_group(self, client, dag_maker):
+        """Test that nested mapped task groups work correctly."""
         with dag_maker("test_nested_mapped_tg", serialized=True):
 
             @task
@@ -345,25 +321,11 @@ class TestTIRunState:
                 ti.set_state(State.QUEUED)
         dag_maker.session.flush()
 
-        # Expected upstream_map_indexes for each print_task instance
-        expected_upstream_map_indexes = {
-            ("expandable_task_group.inner_task_group.print_task", 0): {
-                "expandable_task_group.inner_task_group.alter_input": 0
-            },
-            ("expandable_task_group.inner_task_group.print_task", 1): {
-                "expandable_task_group.inner_task_group.alter_input": 1
-            },
-            ("expandable_task_group.inner_task_group.print_task", 2): {
-                "expandable_task_group.inner_task_group.alter_input": 2
-            },
-        }
-
         # Get only the expanded print_task instances (not the template)
         print_task_tis = [
             ti for ti in dr.get_task_instances() if "print_task" in ti.task_id and ti.map_index >= 0
         ]
 
-        # Test each print_task instance
         for ti in print_task_tis:
             response = client.patch(
                 f"/execution/task-instances/{ti.id}/run",
@@ -377,18 +339,9 @@ class TestTIRunState:
             )
 
             assert response.status_code == 200
-            upstream_map_indexes = response.json()["upstream_map_indexes"]
-            expected = expected_upstream_map_indexes[(ti.task_id, ti.map_index)]
-
-            assert upstream_map_indexes == expected, (
-                f"Task {ti.task_id}[{ti.map_index}] should have upstream_map_indexes {expected}, "
-                f"but got {upstream_map_indexes}"
-            )
 
     def test_dynamic_task_mapping_with_xcom(self, client: Client, dag_maker: DagMaker, session: Session):
-        """
-        Test that the Task Instance upstream_map_indexes is correctly fetched when to running the Task Instances with xcom
-        """
+        """Test that dynamic task mapping works correctly with XCom values."""
         from airflow.models.taskmap import TaskMap
 
         with dag_maker(session=session, serialized=True):
@@ -441,13 +394,10 @@ class TestTIRunState:
                 "start_date": "2024-09-30T12:00:00Z",
             },
         )
-        assert response.json()["upstream_map_indexes"] == {"tg.task_2": [0, 1, 2, 3, 4, 5]}
+        assert response.status_code == 200
 
     def test_dynamic_task_mapping_with_all_success_trigger_rule(self, dag_maker: DagMaker, session: Session):
-        """
-        Test that the Task Instance upstream_map_indexes is not populuated but
-        the downstream task should not be run.
-        """
+        """Test that with ALL_SUCCESS trigger rule and skipped upstream, downstream should not run."""
 
         with dag_maker(session=session, serialized=True):
 
@@ -503,10 +453,7 @@ class TestTIRunState:
     def test_dynamic_task_mapping_with_non_all_success_trigger_rule(
         self, client: Client, dag_maker: DagMaker, session: Session, trigger_rule: TriggerRule
     ):
-        """
-        Test that the Task Instance upstream_map_indexes is not populuated but
-        the downstream task should still be run due to trigger rule.
-        """
+        """Test that with non-ALL_SUCCESS trigger rule, downstream task should still run."""
 
         with dag_maker(session=session, serialized=True):
 
@@ -563,7 +510,7 @@ class TestTIRunState:
                 "start_date": "2024-09-30T12:00:00Z",
             },
         )
-        assert response.json()["upstream_map_indexes"] == {"tg.task_2": None}
+        assert response.status_code == 200
 
     def test_next_kwargs_still_encoded(self, client, session, create_task_instance, time_machine):
         instant_str = "2024-09-30T12:00:00Z"
@@ -579,8 +526,23 @@ class TestTIRunState:
         )
 
         ti.next_method = "execute_complete"
-        # ti.next_kwargs under the hood applies the serde encoding for us
-        ti.next_kwargs = {"moment": instant}
+        # explicitly use serde serialized value before assigning since we use JSON/JSONB now
+        # that this value comes serde serialized from the worker
+        expected_next_kwargs = {
+            "moment": {
+                "__classname__": "pendulum.datetime.DateTime",
+                "__version__": 2,
+                "__data__": {
+                    "timestamp": 1727697600.0,
+                    "tz": {
+                        "__classname__": "builtins.tuple",
+                        "__version__": 1,
+                        "__data__": ["UTC", "pendulum.tz.timezone.Timezone", 1, True],
+                    },
+                },
+            }
+        }
+        ti.next_kwargs = expected_next_kwargs
 
         session.commit()
 
@@ -599,17 +561,13 @@ class TestTIRunState:
         assert response.json() == {
             "dag_run": mock.ANY,
             "task_reschedule_count": 0,
-            "upstream_map_indexes": {},
             "max_tries": 0,
             "should_retry": False,
             "variables": [],
             "connections": [],
             "xcom_keys_to_clear": [],
             "next_method": "execute_complete",
-            "next_kwargs": {
-                "__type": "dict",
-                "__var": {"moment": {"__type": "datetime", "__var": 1727697600.0}},
-            },
+            "next_kwargs": expected_next_kwargs,
         }
 
     @pytest.mark.parametrize("resume", [True, False])
@@ -632,14 +590,26 @@ class TestTIRunState:
         second_start_time = orig_task_start_time.add(seconds=30)
         second_start_time_str = second_start_time.isoformat()
 
-        # ti.next_kwargs under the hood applies the serde encoding for us
+        # explicitly serialize using serde before assigning since we use JSON/JSONB now
+        # this value comes serde serialized from the worker
         if resume:
-            ti.next_kwargs = {"moment": second_start_time}
-            expected_start_date = orig_task_start_time
+            # expected format is now in serde serialized format
             expected_next_kwargs = {
-                "__type": "dict",
-                "__var": {"moment": {"__type": "datetime", "__var": second_start_time.timestamp()}},
+                "moment": {
+                    "__classname__": "pendulum.datetime.DateTime",
+                    "__version__": 2,
+                    "__data__": {
+                        "timestamp": 1727697635.0,
+                        "tz": {
+                            "__classname__": "builtins.tuple",
+                            "__version__": 1,
+                            "__data__": ["UTC", "pendulum.tz.timezone.Timezone", 1, True],
+                        },
+                    },
+                }
             }
+            ti.next_kwargs = expected_next_kwargs
+            expected_start_date = orig_task_start_time
         else:
             expected_start_date = second_start_time
             expected_next_kwargs = None
@@ -662,7 +632,6 @@ class TestTIRunState:
         assert response.json() == {
             "dag_run": mock.ANY,
             "task_reschedule_count": 0,
-            "upstream_map_indexes": {},
             "max_tries": 0,
             "should_retry": False,
             "variables": [],
@@ -1107,62 +1076,108 @@ class TestTIUpdateState:
             assert response.status_code == 500
             assert response.json()["detail"] == "Database error occurred"
 
-    def test_ti_update_state_to_deferred(self, client, session, create_task_instance, time_machine):
+    @pytest.mark.parametrize("queues_enabled", [False, True])
+    def test_ti_update_state_to_deferred(
+        self, client, session, create_task_instance, time_machine, queues_enabled: bool
+    ):
         """
         Test that tests if the transition to deferred state is handled correctly.
         """
-        ti = create_task_instance(
-            task_id="test_ti_update_state_to_deferred",
-            state=State.RUNNING,
-            session=session,
-        )
-        session.commit()
+        with conf_vars({("triggerer", "queues_enabled"): str(queues_enabled)}):
+            ti = create_task_instance(
+                task_id="test_ti_update_state_to_deferred",
+                state=State.RUNNING,
+                session=session,
+            )
+            session.commit()
 
-        instant = timezone.datetime(2024, 11, 22)
-        time_machine.move_to(instant, tick=False)
+            instant = timezone.datetime(2024, 11, 22)
+            time_machine.move_to(instant, tick=False)
 
-        payload = {
-            "state": "deferred",
-            # Raw payload is already "encoded", but not encrypted
-            "trigger_kwargs": {
-                "__type": "dict",
-                "__var": {"key": "value", "moment": {"__type": "datetime", "__var": 1734480001.0}},
-            },
-            "trigger_timeout": "P1D",  # 1 day
-            "classpath": "my-classpath",
-            "next_method": "execute_callback",
-            "next_kwargs": {
-                "__type": "dict",
-                "__var": {"foo": {"__type": "datetime", "__var": 1734480000.0}, "bar": "abc"},
-            },
-        }
+            payload = {
+                "state": "deferred",
+                # expected format is now in serde serialized format
+                "trigger_kwargs": {
+                    "key": "value",
+                    "moment": {
+                        "__classname__": "datetime.datetime",
+                        "__version__": 2,
+                        "__data__": {
+                            "timestamp": 1734480001.0,
+                            "tz": {
+                                "__classname__": "builtins.tuple",
+                                "__version__": 1,
+                                "__data__": ["UTC", "pendulum.tz.timezone.Timezone", 1, True],
+                            },
+                        },
+                    },
+                },
+                "trigger_timeout": "P1D",  # 1 day
+                "queue": "default" if queues_enabled else None,
+                "classpath": "my-classpath",
+                "next_method": "execute_callback",
+                # expected format is now in serde serialized format
+                "next_kwargs": {
+                    "foo": {
+                        "__classname__": "datetime.datetime",
+                        "__version__": 2,
+                        "__data__": {
+                            "timestamp": 1734480000.0,
+                            "tz": {
+                                "__classname__": "builtins.tuple",
+                                "__version__": 1,
+                                "__data__": ["UTC", "pendulum.tz.timezone.Timezone", 1, True],
+                            },
+                        },
+                    },
+                    "bar": "abc",
+                },
+            }
 
-        response = client.patch(f"/execution/task-instances/{ti.id}/state", json=payload)
+            response = client.patch(f"/execution/task-instances/{ti.id}/state", json=payload)
 
-        assert response.status_code == 204
-        assert response.text == ""
+            assert response.status_code == 204
+            assert response.text == ""
 
-        session.expire_all()
+            session.expire_all()
 
-        tis = session.scalars(select(TaskInstance)).all()
-        assert len(tis) == 1
+            tis = session.scalars(select(TaskInstance)).all()
+            assert len(tis) == 1
 
-        assert tis[0].state == TaskInstanceState.DEFERRED
-        assert tis[0].next_method == "execute_callback"
-        assert tis[0].next_kwargs == {
-            "bar": "abc",
-            "foo": datetime(2024, 12, 18, 00, 00, 00, tzinfo=timezone.utc),
-        }
-        assert tis[0].trigger_timeout == timezone.make_aware(datetime(2024, 11, 23), timezone=timezone.utc)
+            assert tis[0].state == TaskInstanceState.DEFERRED
+            assert tis[0].next_method == "execute_callback"
 
-        t = session.scalars(select(Trigger)).all()
-        assert len(t) == 1
-        assert t[0].created_date == instant
-        assert t[0].classpath == "my-classpath"
-        assert t[0].kwargs == {
-            "key": "value",
-            "moment": datetime(2024, 12, 18, 00, 00, 1, tzinfo=timezone.utc),
-        }
+            assert tis[0].next_kwargs == {
+                "foo": {
+                    "__classname__": "datetime.datetime",
+                    "__version__": 2,
+                    "__data__": {
+                        "timestamp": 1734480000.0,
+                        "tz": {
+                            "__classname__": "builtins.tuple",
+                            "__version__": 1,
+                            "__data__": ["UTC", "pendulum.tz.timezone.Timezone", 1, True],
+                        },
+                    },
+                },
+                "bar": "abc",
+            }
+            assert tis[0].trigger_timeout == timezone.make_aware(
+                datetime(2024, 11, 23), timezone=timezone.utc
+            )
+
+            t = session.scalars(select(Trigger)).all()
+            assert len(t) == 1
+            assert t[0].created_date == instant
+            assert t[0].classpath == "my-classpath"
+            assert t[0].kwargs == {
+                "key": "value",
+                "moment": datetime(2024, 12, 18, 00, 00, 1, tzinfo=timezone.utc),
+            }
+            if queues_enabled:
+                assert t[0].queue == "default"
+            else:
+                assert t[0].queue is None
 
     def test_ti_update_state_to_reschedule(self, client, session, create_task_instance, time_machine):
         """

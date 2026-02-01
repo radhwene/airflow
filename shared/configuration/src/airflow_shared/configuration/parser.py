@@ -128,6 +128,7 @@ class AirflowConfigParser(ConfigParser):
     # When reading new option, the old option will be checked to see if it exists. If it does a
     # DeprecationWarning will be issued and the old option will be used instead
     deprecated_options: dict[tuple[str, str], tuple[str, str, str]] = {
+        ("dag_processor", "dag_file_processor_timeout"): ("core", "dag_file_processor_timeout", "3.0"),
         ("dag_processor", "refresh_interval"): ("scheduler", "dag_dir_list_interval", "3.0"),
         ("api", "base_url"): ("webserver", "base_url", "3.0"),
         ("api", "host"): ("webserver", "web_server_host", "3.0"),
@@ -151,6 +152,11 @@ class AirflowConfigParser(ConfigParser):
         ("api", "grid_view_sorting_order"): ("webserver", "grid_view_sorting_order", "3.1.0"),
         ("api", "log_fetch_timeout_sec"): ("webserver", "log_fetch_timeout_sec", "3.1.0"),
         ("api", "hide_paused_dags_by_default"): ("webserver", "hide_paused_dags_by_default", "3.1.0"),
+        ("core", "num_dag_runs_to_retain_rendered_fields"): (
+            "core",
+            "max_num_rendered_ti_fields_per_task",
+            "3.2.0",
+        ),
         ("api", "page_size"): ("webserver", "page_size", "3.1.0"),
         ("api", "default_wrap"): ("webserver", "default_wrap", "3.1.0"),
         ("api", "auto_refresh_interval"): ("webserver", "auto_refresh_interval", "3.1.0"),
@@ -158,6 +164,7 @@ class AirflowConfigParser(ConfigParser):
         ("api", "instance_name"): ("webserver", "instance_name", "3.1.0"),
         ("api", "log_config"): ("api", "access_logfile", "3.1.0"),
         ("scheduler", "ti_metrics_interval"): ("scheduler", "running_metrics_interval", "3.2.0"),
+        ("api", "fallback_page_limit"): ("api", "page_size", "3.2.0"),
     }
 
     # A mapping of new section -> (old section, since_version).
@@ -1049,10 +1056,15 @@ class AirflowConfigParser(ConfigParser):
         try:
             return int(val)
         except ValueError:
-            raise AirflowConfigException(
-                f'Failed to convert value to int. Please check "{key}" key in "{section}" section. '
-                f'Current value: "{val}".'
-            )
+            try:
+                if (float_val := float(val)) != (int_val := int(float_val)):
+                    raise ValueError
+                return int_val
+            except (ValueError, OverflowError):
+                raise AirflowConfigException(
+                    f'Failed to convert value to int. Please check "{key}" key in "{section}" section. '
+                    f'Current value: "{val}".'
+                )
 
     def getfloat(self, section: str, key: str, **kwargs) -> float:  # type: ignore[override]
         """Get config value as float."""
@@ -1594,29 +1606,39 @@ class AirflowConfigParser(ConfigParser):
         needs_separation: bool,
         only_defaults: bool,
         section_to_write: str,
+        hide_sensitive: bool,
+        is_sensitive: bool,
+        show_values: bool = False,
     ):
         default_value = self.get_default_value(section_to_write, option, raw=True)
         if only_defaults:
             value = default_value
         else:
             value = self.get(section_to_write, option, fallback=default_value, raw=True)
-        if value is None:
+        if not show_values:
             file.write(f"# {option} = \n")
         else:
-            if comment_out_everything:
-                value_lines = value.splitlines()
-                value = "\n# ".join(value_lines)
-                file.write(f"# {option} = {value}\n")
+            if hide_sensitive and is_sensitive:
+                value = "< hidden >"
             else:
-                if "\n" in value:
-                    try:
-                        value = json.dumps(json.loads(value), indent=4)
-                        value = value.replace(
-                            "\n", "\n    "
-                        )  # indent multi-line JSON to satisfy configparser format
-                    except JSONDecodeError:
-                        pass
-                file.write(f"{option} = {value}\n")
+                pass
+            if value is None:
+                file.write(f"# {option} = \n")
+            else:
+                if comment_out_everything:
+                    value_lines = value.splitlines()
+                    value = "\n# ".join(value_lines)
+                    file.write(f"# {option} = {value}\n")
+                else:
+                    if "\n" in value:
+                        try:
+                            value = json.dumps(json.loads(value), indent=4)
+                            value = value.replace(
+                                "\n", "\n    "
+                            )  # indent multi-line JSON to satisfy configparser format
+                        except JSONDecodeError:
+                            pass
+                    file.write(f"{option} = {value}\n")
         if needs_separation:
             file.write("\n")
 
@@ -1630,9 +1652,10 @@ class AirflowConfigParser(ConfigParser):
         include_env_vars: bool = True,
         include_providers: bool = True,
         comment_out_everything: bool = False,
-        hide_sensitive_values: bool = False,
+        hide_sensitive: bool = False,
         extra_spacing: bool = True,
         only_defaults: bool = False,
+        show_values: bool = False,
         **kwargs: Any,
     ) -> None:
         """
@@ -1675,6 +1698,10 @@ class AirflowConfigParser(ConfigParser):
                             section_to_write=section_to_write,
                             sources_dict=sources_dict,
                         )
+                        is_sensitive = (
+                            section_to_write.lower(),
+                            option.lower(),
+                        ) in self.sensitive_config_values
                         self._write_value(
                             file=file,
                             option=option,
@@ -1682,6 +1709,9 @@ class AirflowConfigParser(ConfigParser):
                             needs_separation=needs_separation,
                             only_defaults=only_defaults,
                             section_to_write=section_to_write,
+                            hide_sensitive=hide_sensitive,
+                            is_sensitive=is_sensitive,
+                            show_values=show_values,
                         )
                     if include_descriptions and not needs_separation:
                         # extra separation between sections in case last option did not need it
