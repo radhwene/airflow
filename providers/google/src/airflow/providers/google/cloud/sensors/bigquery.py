@@ -29,9 +29,9 @@ from airflow.exceptions import AirflowProviderDeprecationWarning
 from airflow.providers.common.compat.sdk import AirflowException, BaseSensorOperator
 from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
 from airflow.providers.google.cloud.triggers.bigquery import (
+    BigQueryStreamingBufferEmptyTrigger,
     BigQueryTableExistenceTrigger,
     BigQueryTablePartitionExistenceTrigger,
-    BigQueryStreamingBufferEmptyTrigger,
 )
 
 if TYPE_CHECKING:
@@ -264,30 +264,23 @@ class BigQueryStreamingBufferEmptySensor(BaseSensorOperator):
     """
     Sensor for checking whether the streaming buffer in a BigQuery table is empty.
 
-        The BigQueryStreamingBufferEmptySensor waits for the streaming buffer in a specified
-        BigQuery table to be empty before proceeding. It can be used in ETL pipelines to ensure
-        that recent streamed data has been processed before continuing downstream tasks.
+    The BigQueryStreamingBufferEmptySensor waits for the streaming buffer in a specified
+    BigQuery table to be empty before proceeding. It can be used in ETL pipelines to ensure
+    that recent streamed data has been processed before continuing downstream tasks.
 
-        :ivar template_fields: Fields that can be templated in this operator.
-        :type template_fields: Sequence[str]
-        :ivar ui_color: Color of the operator in the Airflow UI.
-        :type ui_color: Str
-        :ivar project_id: The Google Cloud project ID where the BigQuery table resides.
-        :type project_id: Str
-        :ivar dataset_id: The ID of the dataset containing the BigQuery table.
-        :type dataset_id: Str
-        :ivar table_id: The ID of the BigQuery table to monitor.
-        :type table_id: Str
-        :ivar gcp_conn_id: The Airflow connection ID for GCP. Defaults to "google_cloud_default".
-        :type gcp_conn_id: Str
-        :ivar impersonation_chain: Optional array or string of service accounts to impersonate using short-term
-                                   credentials. If multiple accounts are provided, the service account must
-                                   grant the role `roles/iam.serviceAccountTokenCreator` on the next account
-                                   in the chain.
-        :type impersonation_chain: Str | Sequence[str] | None
-        :ivar deferrable: Indicates whether the operator supports deferrable execution. If True, the sensor
-                          can defer instead of polling, leading to reduced resource use.
-        :type deferrable: Bool
+    :param project_id: The Google Cloud project ID where the BigQuery table resides.
+    :param dataset_id: The ID of the dataset containing the BigQuery table.
+    :param table_id: The ID of the BigQuery table to monitor.
+    :param gcp_conn_id: The Airflow connection ID for GCP. Defaults to "google_cloud_default".
+    :param impersonation_chain: Optional service account to impersonate using short-term
+        credentials, or chained list of accounts required to get the access_token
+        of the last account in the list, which will be impersonated in the request.
+        If set as a string, the account must grant the originating account
+        the Service Account Token Creator IAM role.
+        If set as a sequence, the identities from the list must grant
+        Service Account Token Creator IAM role to the directly preceding identity, with first
+        account from the list granting this role to the originating account (templated).
+    :param deferrable: Run sensor in deferrable mode. Defaults to False.
     """
 
     template_fields: Sequence[str] = (
@@ -333,18 +326,7 @@ class BigQueryStreamingBufferEmptySensor(BaseSensorOperator):
         self.deferrable = deferrable
 
     def execute(self, context: Context) -> None:
-        """
-        Executes the operator logic taking into account the `deferrable` attribute.
-        If not deferrable, it uses the base class `execute` method; otherwise, it
-        sets up deferral with a specific trigger to wait until the BigQuery Streaming
-        Buffer is empty.
-
-        :param context: The execution context provided by Airflow. It allows
-            access to metadata and runtime information of the task instance.
-        :type context: Context
-        :return: None. The method does not return anything but performs actions
-            relevant to the operator's execution.
-        """
+        """Airflow runs this method on the worker and defers using the trigger if deferrable."""
         if not self.deferrable:
             super().execute(context)
         else:
@@ -404,8 +386,7 @@ class BigQueryStreamingBufferEmptySensor(BaseSensorOperator):
             return table.get("streamingBuffer") is None
         except Exception as err:
             if "not found" in str(err):
-                raise AirflowException(f"Table {self.project_id}.{self.dataset_id}.{self.table_id} not found") from err
+                raise AirflowException(
+                    f"Table {self.project_id}.{self.dataset_id}.{self.table_id} not found"
+                ) from err
             raise err
-
-
-

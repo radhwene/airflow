@@ -803,6 +803,8 @@ class BigQueryTablePartitionExistenceTrigger(BigQueryTableExistenceTrigger):
         if records:
             records = [row[0] for row in records]
             return self.partition_id in records
+
+
 class BigQueryStreamingBufferEmptyTrigger(BaseTrigger):
     """
     Trigger that periodically checks if a BigQuery table's streaming buffer is empty.
@@ -946,9 +948,7 @@ class BigQueryStreamingBufferEmptyTrigger(BaseTrigger):
 
                 if not response:
                     # Table doesn't exist
-                    raise AirflowException(
-                        f"Table {project_id}.{dataset_id}.{table_id} does not exist"
-                    )
+                    raise AirflowException(f"Table {project_id}.{dataset_id}.{table_id} does not exist")
 
                 # Check if streamingBuffer exists in the response
                 streaming_buffer = response.get("streamingBuffer")
@@ -956,7 +956,5 @@ class BigQueryStreamingBufferEmptyTrigger(BaseTrigger):
 
             except ClientResponseError as err:
                 if err.status == 404:
-                    raise AirflowException(
-                        f"Table {project_id}.{dataset_id}.{table_id} not found"
-                    ) from err
+                    raise AirflowException(f"Table {project_id}.{dataset_id}.{table_id} not found") from err
                 raise err
