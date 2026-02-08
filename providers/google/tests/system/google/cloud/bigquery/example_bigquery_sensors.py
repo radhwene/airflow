@@ -24,7 +24,11 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
-from airflow.models.dag import DAG
+try:
+    from airflow.sdk import DAG
+except ImportError:
+    from airflow.models.dag import DAG  # type: ignore[no-redef,attr-defined]
+
 from airflow.providers.google.cloud.operators.bigquery import (
     BigQueryCreateEmptyDatasetOperator,
     BigQueryCreateTableOperator,
