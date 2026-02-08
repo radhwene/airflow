@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
+from airflow.models.baseoperator import chain
 from airflow.models.dag import DAG
 from airflow.providers.google.cloud.operators.bigquery import (
     BigQueryCreateEmptyDatasetOperator,
@@ -231,23 +232,23 @@ with DAG(
         trigger_rule=TriggerRule.ALL_DONE,
     )
 
-    (
-        create_dataset
-        >> create_table
-        >> [check_table_exists, check_table_exists_async, check_table_exists_def]
-        >> execute_insert_query
-        >> [
+    chain(
+        create_dataset,
+        create_table,
+        [check_table_exists, check_table_exists_async, check_table_exists_def],
+        execute_insert_query,
+        [
             check_table_partition_exists,
             check_table_partition_exists_async,
             check_table_partition_exists_def,
-        ]
-        >> [stream_insert, stream_update, stream_delete]
-        >> [
+        ],
+        [stream_insert, stream_update, stream_delete],
+        [
             check_streaming_buffer_empty,
             check_streaming_buffer_empty_async,
             check_streaming_buffer_empty_def,
-        ]
-        >> delete_dataset
+        ],
+        delete_dataset,
     )
 
     from tests_common.test_utils.watcher import watcher
