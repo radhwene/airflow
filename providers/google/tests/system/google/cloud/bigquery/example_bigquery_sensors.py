@@ -24,7 +24,6 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
-from airflow.models.baseoperator import chain
 from airflow.models.dag import DAG
 from airflow.providers.google.cloud.operators.bigquery import (
     BigQueryCreateEmptyDatasetOperator,
@@ -232,23 +231,34 @@ with DAG(
         trigger_rule=TriggerRule.ALL_DONE,
     )
 
-    chain(
-        create_dataset,
-        create_table,
-        [check_table_exists, check_table_exists_async, check_table_exists_def],
-        execute_insert_query,
-        [
-            check_table_partition_exists,
-            check_table_partition_exists_async,
-            check_table_partition_exists_def,
-        ],
-        [stream_insert, stream_update, stream_delete],
+    # Task dependencies
+    create_dataset >> create_table
+    create_table >> [check_table_exists, check_table_exists_async, check_table_exists_def]
+    [check_table_exists, check_table_exists_async, check_table_exists_def] >> execute_insert_query
+    execute_insert_query >> [
+        check_table_partition_exists,
+        check_table_partition_exists_async,
+        check_table_partition_exists_def,
+    ]
+    for partition_task in [
+        check_table_partition_exists,
+        check_table_partition_exists_async,
+        check_table_partition_exists_def,
+    ]:
+        partition_task >> [stream_insert, stream_update, stream_delete]
+    for stream_task in [stream_insert, stream_update, stream_delete]:
+        stream_task >> [
+            check_streaming_buffer_empty,
+            check_streaming_buffer_empty_async,
+            check_streaming_buffer_empty_def,
+        ]
+    (
         [
             check_streaming_buffer_empty,
             check_streaming_buffer_empty_async,
             check_streaming_buffer_empty_def,
-        ],
-        delete_dataset,
+        ]
+        >> delete_dataset
     )
 
     from tests_common.test_utils.watcher import watcher
