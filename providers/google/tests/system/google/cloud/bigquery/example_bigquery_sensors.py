@@ -32,9 +32,9 @@ from airflow.providers.google.cloud.operators.bigquery import (
     BigQueryInsertJobOperator,
 )
 from airflow.providers.google.cloud.sensors.bigquery import (
+    BigQueryStreamingBufferEmptySensor,
     BigQueryTableExistenceSensor,
     BigQueryTablePartitionExistenceSensor,
-    BigQueryStreamingBufferEmptySensor,
 )
 
 try:
