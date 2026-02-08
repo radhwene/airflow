@@ -377,12 +377,10 @@ class BigQueryStreamingBufferEmptySensor(BaseSensorOperator):
             impersonation_chain=self.impersonation_chain,
         )
         try:
-            table = hook.get_table(
-                project_id=self.project_id,
-                dataset_id=self.dataset_id,
-                table_id=self.table_id,
-            )
-            return table.get("streamingBuffer") is None
+            client = hook.get_client(project_id=self.project_id)
+            table_ref = f"{self.project_id}.{self.dataset_id}.{self.table_id}"
+            table = client.get_table(table_ref)
+            return table.streaming_buffer is None
         except Exception as err:
             if "not found" in str(err):
                 raise AirflowException(
